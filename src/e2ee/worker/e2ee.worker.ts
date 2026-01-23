@@ -27,19 +27,6 @@ let messageQueue = new AsyncQueue();
 
 let isEncryptionEnabled: boolean = false;
 
-// Force the publisher to generate a keyframe at least every N ms.
-//
-// Why this exists:
-// - WebRTC encoders (especially for screenshare/static content) can produce very sparse keyframes.
-// - On the recording side, HLS segmenters (e.g., GStreamer hlssink) typically cut on IDR frames.
-// - Sparse keyframes => extremely long HLS segments => huge `.ts` files and poor seekability.
-//
-// Using the WebRTC Encoded Transform (RTCRtpScriptTransform) we get access to an
-// RTCRtpScriptTransformer in the worker, which can trigger keyframe generation.
-const FORCE_KEYFRAME_INTERVAL_MS = 5000;
-
-const keyFrameIntervals: Map<string, number> = new Map();
-
 let useSharedKey: boolean = false;
 
 let sifTrailer: Uint8Array | undefined;
@@ -49,83 +36,6 @@ let keyProviderOptions: KeyProviderOptions = KEY_PROVIDER_DEFAULTS;
 let rtpMap: Map<number, VideoCodec> = new Map();
 
 workerLogger.setDefaultLevel('info');
-
-async function requestVideoKeyFrame(transformer: any, trackId: string): Promise<boolean> {
-  if (!transformer) return false;
-
-  if (typeof transformer.generateKeyFrame === 'function') {
-    await transformer.generateKeyFrame();
-    return true;
-  }
-
-  if (typeof transformer.sendKeyFrameRequest === 'function') {
-    await transformer.sendKeyFrameRequest();
-    return true;
-  }
-
-  // If neither API exists, there's nothing we can do in this worker.
-  workerLogger.debug('keyframe request API not available on transformer', { trackId });
-  return false;
-}
-
-function stopKeyFrameLoop(trackId: string) {
-  const intervalId = keyFrameIntervals.get(trackId);
-  if (intervalId !== undefined) {
-    clearInterval(intervalId);
-    keyFrameIntervals.delete(trackId);
-  }
-}
-
-function startKeyFrameLoop(trackId: string, transformer: any) {
-  stopKeyFrameLoop(trackId);
-
-  let inFlight = false;
-  let consecutiveFailures = 0;
-
-  const tick = async () => {
-    if (inFlight) return;
-    inFlight = true;
-    try {
-      const didRequest = await requestVideoKeyFrame(transformer, trackId);
-      if (!didRequest) {
-        consecutiveFailures += 1;
-        if (consecutiveFailures === 1 || consecutiveFailures % 12 === 0) {
-          workerLogger.warn('keyframe request API not available on transformer', {
-            trackId,
-            consecutiveFailures,
-          });
-        }
-        // Stop after ~1 minute to avoid leaking intervals on unsupported runtimes.
-        if (consecutiveFailures >= 12) {
-          stopKeyFrameLoop(trackId);
-        }
-        return;
-      }
-      consecutiveFailures = 0;
-    } catch (error) {
-      consecutiveFailures += 1;
-      if (consecutiveFailures === 1 || consecutiveFailures % 12 === 0) {
-        workerLogger.warn('failed to request/generate video keyframe', {
-          trackId,
-          consecutiveFailures,
-          error,
-        });
-      }
-
-      // If the transform is torn down, this will typically fail forever. Stop after ~1 minute.
-      if (consecutiveFailures >= 12) {
-        stopKeyFrameLoop(trackId);
-      }
-    } finally {
-      inFlight = false;
-    }
-  };
-
-  // Trigger immediately and then periodically.
-  tick();
-  const intervalId = setInterval(tick, FORCE_KEYFRAME_INTERVAL_MS) as unknown as number;
-  keyFrameIntervals.set(trackId, intervalId);
-}
 
 onmessage = (ev) => {
   messageQueue.run(async () => {
@@ -242,7 +152,6 @@ onmessage = (ev) => {
         }
         break;
       case 'removeTransform':
-        stopKeyFrameLoop(data.trackId);
         unsetCryptorParticipant(data.trackId, data.participantIdentity);
         break;
       case 'updateCodec':
@@ -423,16 +332,10 @@ if (self.RTCTransformEvent) {
     const transformer = event.transformer;
     workerLogger.debug('transformer', transformer);
 
-    const { kind, participantIdentity, trackId, trackKind, codec } =
+    const { kind, participantIdentity, trackId, codec } =
       transformer.options as ScriptTransformOptions;
     const cryptor = getTrackCryptor(participantIdentity, trackId);
     workerLogger.debug('transform', { codec });
     cryptor.setupTransform(kind, transformer.readable, transformer.writable, trackId, false, codec);
-
-    // Force regular video keyframes for publish (encode) transforms. This requires
-    // the ScriptTransform API, and is intentionally best-effort.
-    if (kind === 'encode' && trackKind === 'video') {
-      startKeyFrameLoop(trackId, transformer);
-    }
   };
 }
