@@ -115,6 +115,6 @@
   },
   "packageManager": "pnpm@10.22.0",
   "publishConfig": {
-    "@virtuoso:registry": "https://gitlab.virtuosohub.ai/api/v4/projects/11/packages/npm/"
+    "registry": "https://gitlab.virtuosohub.ai/api/v4/projects/11/packages/npm/"
   }
 }
