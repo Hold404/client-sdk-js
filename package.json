@@ -1,5 +1,5 @@
 {
-  "name": "livekit-client",
+  "name": "@virtuoso/livekit-client",
   "version": "2.16.1",
   "description": "JavaScript/TypeScript client SDK for LiveKit",
   "main": "./dist/livekit-client.umd.js",
@@ -114,5 +114,8 @@
     "vitest": "^3.0.0",
     "rimraf": "6.1.2"
   },
-  "packageManager": "pnpm@10.22.0"
+  "packageManager": "pnpm@10.22.0",
+  "publishConfig": {
+    "@virtuoso:registry": "https://gitlab.virtuosohub.ai/api/v4/projects/11/packages/npm/"
+  }
 }
